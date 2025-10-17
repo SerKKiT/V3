@@ -279,6 +279,12 @@ services:
       RECORDING_SERVICE_URL: ${RECORDING_SERVICE_URL}
       VOD_SERVICE_URL: ${VOD_SERVICE_URL}
       JWT_SECRET: ${JWT_SECRET}
+      ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
+      CORS_ALLOW_CREDENTIALS: "true"
+
+      # Production (раскомментировать при деплое)
+      # ALLOWED_ORIGINS: "https://yourstreaming.com,https://www.yourstreaming.com"
+      
     ports:
       - "${API_GATEWAY_PORT}:${API_GATEWAY_PORT}"
     networks:
@@ -303,12 +309,12 @@ services:
     build: ./services/cache-refresher
     container_name: streaming-cache-refresher
     environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: streaming_user
-      POSTGRES_PASSWORD: streaming_pass
-      STREAMS_DB_NAME: streams_db
-      VOD_DB_NAME: vod_db
+      POSTGRES_HOST: ${DB_HOST}
+      POSTGRES_PORT: ${DB_PORT}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      STREAMS_DB_NAME: ${STREAMS_DB_NAME}
+      VOD_DB_NAME: ${VOD_DB_NAME}
       STREAMS_REFRESH_INTERVAL: ${STREAMS_REFRESH_INTERVAL:-5m}
       VIDEOS_REFRESH_INTERVAL: ${VIDEOS_REFRESH_INTERVAL:-10m}
     depends_on:

@@ -126,7 +126,7 @@ func main() {
 	router := gin.Default()
 
 	// Global middleware
-	router.Use(middleware.CORSMiddleware())
+	//router.Use(middleware.CORSMiddleware())
 	router.Use(middleware.UserContextMiddleware()) // Extract X-User-ID from API Gateway
 
 	// Health check

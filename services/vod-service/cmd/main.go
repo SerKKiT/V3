@@ -68,19 +68,19 @@ func main() {
 	router := gin.Default()
 
 	// CORS middleware
-	router.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-ID, X-Internal-API-Key")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+	// router.Use(func(c *gin.Context) {
+	// 	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+	// 	c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	// 	c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-ID, X-Internal-API-Key")
+	// 	c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
-		}
+	// 	if c.Request.Method == "OPTIONS" {
+	// 		c.AbortWithStatus(204)
+	// 		return
+	// 	}
 
-		c.Next()
-	})
+	// 	c.Next()
+	// })
 
 	// Health check
 	router.GET("/health", handlers.HealthCheck)
