@@ -34,7 +34,6 @@ func (r *StreamRepository) CreateStream(userID uuid.UUID, streamKey, title, desc
 	}
 
 	defaultQualities := []string{"360p", "480p", "720p", "1080p"}
-
 	query := `
 		INSERT INTO streams (id, user_id, stream_key, title, description, status, viewer_count, available_qualities, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -42,7 +41,6 @@ func (r *StreamRepository) CreateStream(userID uuid.UUID, streamKey, title, desc
 	`
 
 	var qualities []string
-
 	err := r.db.QueryRow(
 		query,
 		stream.ID,
@@ -74,16 +72,24 @@ func (r *StreamRepository) CreateStream(userID uuid.UUID, streamKey, title, desc
 	return stream, nil
 }
 
-// GetStreamByID retrieves a stream by its ID with username
+// ✅ ОПТИМИЗИРОВАНО: GetStreamByID с CTE для предварительной фильтрации
 func (r *StreamRepository) GetStreamByID(streamID uuid.UUID) (*models.Stream, error) {
+	// CTE сначала фильтрует streams, затем JOIN с FDW
 	query := `
-		SELECT 
-			s.id, s.user_id, s.stream_key, s.title, s.description, s.status, s.viewer_count,
-			s.started_at, s.ended_at, s.thumbnail_url, s.hls_url, s.available_qualities, s.created_at,
+		WITH target_stream AS (
+			SELECT 
+				id, user_id, stream_key, title, description, status, viewer_count,
+				started_at, ended_at, thumbnail_url, hls_url, available_qualities, created_at
+			FROM streams
+			WHERE id = $1
+		)
+		SELECT
+			ts.id, ts.user_id, ts.stream_key, ts.title, ts.description, 
+			ts.status, ts.viewer_count, ts.started_at, ts.ended_at, 
+			ts.thumbnail_url, ts.hls_url, ts.available_qualities, ts.created_at,
 			COALESCE(u.username, 'Unknown') as username
-		FROM streams s
-		LEFT JOIN users u ON s.user_id = u.id
-		WHERE s.id = $1
+		FROM target_stream ts
+		LEFT JOIN users u ON ts.user_id = u.id
 	`
 
 	stream := &models.Stream{}
@@ -103,6 +109,7 @@ func (r *StreamRepository) GetStreamByID(streamID uuid.UUID) (*models.Stream, er
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("stream not found")
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get stream: %w", err)
 	}
@@ -110,19 +117,21 @@ func (r *StreamRepository) GetStreamByID(streamID uuid.UUID) (*models.Stream, er
 	if startedAt.Valid {
 		stream.StartedAt = &startedAt.Time
 	}
+
 	if endedAt.Valid {
 		stream.EndedAt = &endedAt.Time
 	}
+
 	if thumbnailURL.Valid {
 		stream.ThumbnailURL = thumbnailURL.String
 	}
+
 	if hlsURL.Valid {
 		stream.HLSURL = hlsURL.String
 	}
 
 	stream.Username = username
 	stream.AvailableQualities = pq.StringArray(qualities)
-
 	return stream, nil
 }
 
@@ -180,32 +189,40 @@ func (r *StreamRepository) GetStreamByKey(streamKey string) (*models.Stream, err
 	return stream, nil
 }
 
-// GetUserStreams retrieves all streams for a user with username
+// ✅ ОПТИМИЗИРОВАНО: GetUserStreams с CTE
 func (r *StreamRepository) GetUserStreams(userID uuid.UUID) ([]*models.Stream, error) {
 	query := `
-		SELECT 
-			s.id, s.user_id, s.stream_key, s.title, s.description, s.status, s.viewer_count,
-			s.started_at, s.ended_at, s.thumbnail_url, s.hls_url, s.available_qualities, s.created_at,
+		WITH filtered_streams AS (
+			SELECT 
+				id, user_id, stream_key, title, description, status, viewer_count,
+				started_at, ended_at, thumbnail_url, hls_url, available_qualities, created_at
+			FROM streams
+			WHERE user_id = $1
+			ORDER BY created_at DESC
+		)
+		SELECT
+			fs.id, fs.user_id, fs.stream_key, fs.title, fs.description, 
+			fs.status, fs.viewer_count, fs.started_at, fs.ended_at, 
+			fs.thumbnail_url, fs.hls_url, fs.available_qualities, fs.created_at,
 			COALESCE(u.username, 'Unknown Streamer') as username
-		FROM streams s
-		LEFT JOIN users u ON s.user_id = u.id
-		WHERE s.user_id = $1
-		ORDER BY s.created_at DESC
+		FROM filtered_streams fs
+		LEFT JOIN users u ON fs.user_id = u.id
 	`
 
 	rows, err := r.db.Query(query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user streams: %w", err)
 	}
-	defer rows.Close()
 
+	defer rows.Close()
 	var streams []*models.Stream
+
 	for rows.Next() {
 		stream := &models.Stream{}
 		var startedAt, endedAt sql.NullTime
 		var thumbnailURL, hlsURL sql.NullString
 		var qualities []string
-		var username string // ← ДОБАВЛЕНО
+		var username string
 
 		err := rows.Scan(
 			&stream.ID,
@@ -221,8 +238,9 @@ func (r *StreamRepository) GetUserStreams(userID uuid.UUID) ([]*models.Stream, e
 			&hlsURL,
 			pq.Array(&qualities),
 			&stream.CreatedAt,
-			&username, // ← ДОБАВЛЕНО
+			&username,
 		)
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan stream: %w", err)
 		}
@@ -243,7 +261,7 @@ func (r *StreamRepository) GetUserStreams(userID uuid.UUID) ([]*models.Stream, e
 			stream.HLSURL = hlsURL.String
 		}
 
-		stream.Username = username // ← ДОБАВЛЕНО
+		stream.Username = username
 		stream.AvailableQualities = pq.StringArray(qualities)
 		streams = append(streams, stream)
 	}
@@ -251,32 +269,41 @@ func (r *StreamRepository) GetUserStreams(userID uuid.UUID) ([]*models.Stream, e
 	return streams, nil
 }
 
-// GetLiveStreams retrieves all live streams with username
+// ✅ ОПТИМИЗИРОВАНО: GetLiveStreams с CTE и LIMIT
 func (r *StreamRepository) GetLiveStreams() ([]*models.Stream, error) {
 	query := `
-		SELECT 
-			s.id, s.user_id, s.stream_key, s.title, s.description, s.status, s.viewer_count,
-			s.started_at, s.ended_at, s.thumbnail_url, s.hls_url, s.available_qualities, s.created_at,
+		WITH filtered_streams AS (
+			SELECT 
+				id, user_id, stream_key, title, description, status, viewer_count,
+				started_at, ended_at, thumbnail_url, hls_url, available_qualities, created_at
+			FROM streams
+			WHERE status = 'live'
+			ORDER BY started_at DESC
+			LIMIT 100
+		)
+		SELECT
+			fs.id, fs.user_id, fs.stream_key, fs.title, fs.description, 
+			fs.status, fs.viewer_count, fs.started_at, fs.ended_at, 
+			fs.thumbnail_url, fs.hls_url, fs.available_qualities, fs.created_at,
 			COALESCE(u.username, 'Unknown Streamer') as username
-		FROM streams s
-		LEFT JOIN users u ON s.user_id = u.id
-		WHERE s.status = 'live'
-		ORDER BY s.started_at DESC
+		FROM filtered_streams fs
+		LEFT JOIN users u ON fs.user_id = u.id
 	`
 
 	rows, err := r.db.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get live streams: %w", err)
 	}
-	defer rows.Close()
 
+	defer rows.Close()
 	var streams []*models.Stream
+
 	for rows.Next() {
 		stream := &models.Stream{}
 		var startedAt, endedAt sql.NullTime
 		var thumbnailURL, hlsURL sql.NullString
 		var qualities []string
-		var username string // ← ДОБАВЛЕНО
+		var username string
 
 		err := rows.Scan(
 			&stream.ID,
@@ -292,8 +319,9 @@ func (r *StreamRepository) GetLiveStreams() ([]*models.Stream, error) {
 			&hlsURL,
 			pq.Array(&qualities),
 			&stream.CreatedAt,
-			&username, // ← ДОБАВЛЕНО
+			&username,
 		)
+
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan stream: %w", err)
 		}
@@ -314,7 +342,7 @@ func (r *StreamRepository) GetLiveStreams() ([]*models.Stream, error) {
 			stream.HLSURL = hlsURL.String
 		}
 
-		stream.Username = username // ← ДОБАВЛЕНО
+		stream.Username = username
 		stream.AvailableQualities = pq.StringArray(qualities)
 		streams = append(streams, stream)
 	}
@@ -325,32 +353,33 @@ func (r *StreamRepository) GetLiveStreams() ([]*models.Stream, error) {
 // UpdateStream updates stream title and description
 func (r *StreamRepository) UpdateStream(stream *models.Stream) error {
 	query := `
-		UPDATE streams 
+		UPDATE streams
 		SET title = $1, description = $2, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $3
 	`
+
 	_, err := r.db.Exec(query, stream.Title, stream.Description, stream.ID)
 	if err != nil {
 		return fmt.Errorf("failed to update stream: %w", err)
 	}
+
 	return nil
 }
 
-// UpdateStreamStatus updates stream status (live/offline)
 // UpdateStreamStatus updates stream status (live/offline)
 func (r *StreamRepository) UpdateStreamStatus(streamID uuid.UUID, status string) error {
 	now := time.Now()
 
 	if status == "live" {
-		// При переходе в live устанавливаем started_at только если он NULL
 		query := `
-			UPDATE streams 
+			UPDATE streams
 			SET status = $1,
 			    started_at = COALESCE(started_at, $2),
 			    ended_at = NULL,
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE id = $3
 		`
+
 		_, err := r.db.Exec(query, status, now, streamID)
 		if err != nil {
 			return fmt.Errorf("failed to update stream status to live: %w", err)
@@ -358,14 +387,14 @@ func (r *StreamRepository) UpdateStreamStatus(streamID uuid.UUID, status string)
 
 		log.Printf("✅ Stream %s status updated to 'live'", streamID)
 	} else if status == "offline" {
-		// При переходе в offline устанавливаем ended_at
 		query := `
-			UPDATE streams 
+			UPDATE streams
 			SET status = $1,
 			    ended_at = $2,
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE id = $3
 		`
+
 		_, err := r.db.Exec(query, status, now, streamID)
 		if err != nil {
 			return fmt.Errorf("failed to update stream status to offline: %w", err)
@@ -373,13 +402,13 @@ func (r *StreamRepository) UpdateStreamStatus(streamID uuid.UUID, status string)
 
 		log.Printf("✅ Stream %s status updated to 'offline'", streamID)
 	} else {
-		// Для других статусов просто обновляем status
 		query := `
-			UPDATE streams 
+			UPDATE streams
 			SET status = $1,
 			    updated_at = CURRENT_TIMESTAMP
 			WHERE id = $2
 		`
+
 		_, err := r.db.Exec(query, status, streamID)
 		if err != nil {
 			return fmt.Errorf("failed to update stream status: %w", err)
@@ -392,14 +421,16 @@ func (r *StreamRepository) UpdateStreamStatus(streamID uuid.UUID, status string)
 // UpdateStreamThumbnail updates stream thumbnail URL
 func (r *StreamRepository) UpdateStreamThumbnail(streamID uuid.UUID, thumbnailURL string) error {
 	query := `
-		UPDATE streams 
+		UPDATE streams
 		SET thumbnail_url = $1, updated_at = CURRENT_TIMESTAMP
 		WHERE id = $2
 	`
+
 	_, err := r.db.Exec(query, thumbnailURL, streamID)
 	if err != nil {
 		return fmt.Errorf("failed to update thumbnail: %w", err)
 	}
+
 	return nil
 }
 
