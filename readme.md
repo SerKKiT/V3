@@ -1,636 +1,324 @@
-# 📊 АНАЛИЗ ТЕКУЩЕЙ АРХИТЕКТУРЫ И РЕКОМЕНДАЦИИ
+# 🎬 Streaming Platform - Текущая Архитектура и Статус
 
-## 🔍 Текущее состояние платформы
+## 📐 Архитектура системы
 
-### ✅ Что реализовано
+### **Microservices Architecture**
 
-**Backend (Go):**
-1. **API Gateway** - роутинг, JWT validation, rate limiting
-2. **Auth Service** - регистрация, логин, управление профилем
-3. **Stream Service** - управление стримами + встроенный FFmpeg менеджер для SRT→HLS
-4. **Recording Service** - запись стримов
-5. **VOD Service** - управление видео контентом
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       FRONTEND (React)                       │
+│          http://localhost (Vite + VideoJS + HLS)            │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│                    NGINX (Reverse Proxy)                     │
+│        ├─ /api/* → API Gateway                              │
+│        ├─ /live-streams/* → MinIO (HLS segments)           │
+│        └─ /storage/* → MinIO (VOD videos)                  │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+        ┌──────────────┴──────────────┐
+        │                             │
+┌───────▼────────┐           ┌────────▼────────┐
+│  API Gateway   │           │      MinIO      │
+│   (Port 8080)  │           │  Object Storage │
+└───────┬────────┘           └─────────────────┘
+        │                    • Buckets:
+        │                      - live-segments/ (HLS)
+   ┌────┴─────┬──────────────  - recordings/
+   │          │                - vod-videos/
+┌──▼──┐  ┌───▼────┐  ┌─────▼─────┐  ┌────────▼─────┐
+│Auth │  │Stream  │  │Recording  │  │VOD           │
+│     │  │Service │  │Service    │  │Service       │
+└──┬──┘  └───┬────┘  └─────┬─────┘  └────────┬─────┘
+   │         │              │                 │
+   │         │              │                 │
+┌──▼─────────▼──────────────▼─────────────────▼─────┐
+│            PostgreSQL (3 Databases)                │
+│  ├─ auth_db (users, JWT)                          │
+│  ├─ streams_db (streams, FDW → users)             │
+│  ├─ recordings_db (recordings)                    │
+│  └─ vod_db (videos, FDW → users)                  │
+└────────────────────────────────────────────────────┘
 
-**Frontend (React):**
-1. Аутентификация (Login/Register)
-2. Dashboard для стримеров
-3. Создание и управление стримами
-4. Просмотр live стримов
-5. Каталог VOD
-6. Настройки профиля
+External:
+  ┌────────────────┐
+  │  SRT Server    │  ← Live streaming input
+  │  (Port 8890)   │     (OBS Studio)
+  └────────────────┘
+        │
+        ▼
+  ┌────────────────┐
+  │  Transcoder    │  → FFmpeg → HLS → MinIO
+  └────────────────┘
+```
 
-**Infrastructure:**
-1. PostgreSQL (4 базы данных)
-2. MinIO (object storage)
-3. Nginx (reverse proxy + HLS serving)
-4. Docker Compose
+***
+
+## 🏗️ Компоненты системы
+
+### **1. Frontend (React + Vite)**
+- ✅ **Live Streaming:** VideoJS player с HLS.js, adaptive bitrate (360p-1080p)
+- ✅ **VOD:** Просмотр записанных видео с thumbnail preview
+- ✅ **Authentication:** JWT-based auth (localStorage + HttpOnly cookies)
+- ✅ **UI:** Tailwind CSS, responsive design
+- ✅ **Features:**
+  - Live stream player с custom controls
+  - DVR (перемотка в live стриме)
+  - Quality selector (360p, 480p, 720p, 1080p)
+  - Username display (через FDW)
+  - Keyboard shortcuts (Space, J/L, Arrow keys)
+
+### **2. API Gateway (Golang)**
+- ✅ **Routing:** Centralized routing для всех микросервисов
+- ✅ **CORS:** Настроенный CORS для frontend
+- ✅ **Endpoints:**
+  - `/api/auth/*` → Auth Service
+  - `/api/streams/*` → Stream Service
+  - `/api/videos/*` → VOD Service
+  - `/api/recordings/*` → Recording Service
+
+### **3. Auth Service**
+- ✅ **JWT Authentication:** Access + Refresh tokens
+- ✅ **Database:** `auth_db` (users, sessions)
+- ✅ **Features:**
+  - Register, Login, Logout
+  - Token refresh
+  - Password hashing (bcrypt)
+  - User profile management
+
+### **4. Stream Service**
+- ✅ **Live Streaming:** Управление live стримами
+- ✅ **Database:** `streams_db` с **FDW** к `auth_db.users`
+- ✅ **Features:**
+  - Create/Delete/Update streams
+  - Stream key generation
+  - Live status tracking
+  - Multi-quality HLS (ABR)
+  - Viewer count
+  - **Username** в ответах через FDW JOIN
+- ✅ **SRT Integration:** Приём потока с OBS через SRT
+
+### **5. Recording Service**
+- ✅ **Auto-Recording:** Автоматическая запись всех live стримов
+- ✅ **Stream Monitoring:** Отслеживание активных стримов (polling)
+- ✅ **FFmpeg Integration:** Захват HLS → MP4
+- ✅ **Thumbnail Generation:** Автогенерация превью
+- ✅ **MinIO Upload:** Загрузка записей в MinIO
+- ✅ **Database:** `recordings_db`
+- ✅ **VOD Import:** Автоматический импорт в VOD после завершения
+- ✅ **Internal Auth:** `X-Internal-API-Key` для service-to-service
+
+### **6. VOD Service**
+- ✅ **Video Management:** CRUD для видео
+- ✅ **Database:** `vod_db` с **FDW** к `auth_db.users`
+- ✅ **Features:**
+  - Import recordings from Recording Service
+  - Video streaming (direct MP4 playback)
+  - Thumbnail serving
+  - View counter
+  - Like system
+  - Tags/categories
+  - **Username** в ответах через FDW JOIN
+- ✅ **Security:**
+  - Optional Auth (public/private videos)
+  - Internal API key для recording service
+  - Cookie + JWT auth
+
+### **7. Transcoder Service**
+- ✅ **Live Transcoding:** SRT → HLS (multi-bitrate)
+- ✅ **FFmpeg Pipeline:** 4 качества (360p, 480p, 720p, 1080p)
+- ✅ **HLS Generation:**
+  - `master.m3u8` (ABR manifest)
+  - `{quality}/playlist.m3u8` (per-quality playlists)
+  - `.ts` segments (2-4 seconds)
+- ✅ **MinIO Integration:** Direct upload к MinIO
+- ✅ **Webhook:** Уведомление Stream Service о статусах
+
+### **8. MinIO (Object Storage)**
+- ✅ **Buckets:**
+  - `live-segments/` - HLS сегменты live стримов
+  - `recordings/` - MP4 записи
+  - `vod-videos/` - VOD контент
+- ✅ **Public Access:** Настроенные policies для публичного доступа
+- ✅ **NGINX Proxy:** `/live-streams/*` и `/storage/*`
+
+### **9. PostgreSQL (3 Databases)**
+
+#### **auth_db**
+```sql
+users (id, username, email, password_hash, created_at)
+refresh_tokens (...)
+```
+
+#### **streams_db** 
+```sql
+streams (id, user_id, stream_key, title, status, started_at, available_qualities, ...)
+-- FDW: auth_db.users_foreign
+```
+
+#### **recordings_db**
+```sql
+recordings (id, stream_id, file_path, started_at, ended_at, status, video_id, ...)
+```
+
+#### **vod_db**
+```sql
+videos (id, user_id, title, file_path, thumbnail_path, view_count, ...)
+video_likes (...)
+video_tags (...)
+-- FDW: auth_db.users_foreign
+```
+
+***
+
+## 🔒 Security Architecture
+
+### **Authentication Layers**
+
+1. **User Authentication (JWT)**
+   - Frontend → Backend: `Authorization: Bearer <token>`
+   - Cookie-based auth для video streaming
+   - Refresh token rotation
+
+2. **Service-to-Service Authentication**
+   - `X-Internal-API-Key` header
+   - Recording → VOD import
+   - Only trusted services
+
+3. **Foreign Data Wrapper (FDW)**
+   - Cross-database queries (streams_db → auth_db)
+   - Username display без дублирования данных
+   - Read-only access
+
+### **CORS Configuration**
+```
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: Authorization, Content-Type, X-User-ID, X-Internal-API-Key
+```
+
+***
+
+## 🎥 Live Streaming Flow
+
+```
+1. OBS Studio 
+   ↓ (SRT protocol)
+2. SRT Server (:8890)
+   ↓
+3. Transcoder Service
+   ↓ (FFmpeg transcoding)
+4. MinIO (live-segments/)
+   ├─ master.m3u8
+   ├─ 1080p/playlist.m3u8
+   ├─ 720p/playlist.m3u8
+   ├─ 480p/playlist.m3u8
+   └─ 360p/playlist.m3u8
+   ↓
+5. NGINX (/live-streams/*)
+   ↓
+6. Frontend (VideoJS HLS player)
+
+Параллельно:
+3a. Recording Service
+    ↓ (monitors streams)
+4a. FFmpeg Recorder (HLS → MP4)
+    ↓
+5a. MinIO (recordings/)
+    ↓
+6a. VOD Import (automatic)
+```
+
+***
+
+## ✅ Текущий статус функционала
+
+### **Полностью работает:**
+- ✅ Live streaming (SRT → HLS → Player)
+- ✅ Multi-bitrate adaptive streaming (ABR)
+- ✅ Automatic recording всех стримов
+- ✅ Thumbnail generation
+- ✅ VOD import (recording → video)
+- ✅ Username display (через FDW)
+- ✅ Authentication (JWT + cookies)
+- ✅ Custom video player (keyboard shortcuts, DVR, quality selector)
+- ✅ Stream management (create, delete, update)
+- ✅ Video management (CRUD, views, likes)
+
+### **Известные особенности:**
+- ⚠️ Recording service polling (каждые 10 секунд) - может быть заменён на webhooks
+- ⚠️ MinIO public buckets - нужно для демо, в prod добавить signed URLs
+- ⚠️ CORS `*` - в prod ограничить домены
+
+***
+
+## 📊 Database Schema Summary
+
+### **FDW Architecture:**
+```
+auth_db (master)
+  └─ users
+        ↑ (FDW)
+        ├─ streams_db.users_foreign
+        └─ vod_db.users_foreign
+```
+
+**Преимущества:**
+- Единый источник истины (auth_db)
+- Автоматические JOIN с username
+- Нет дублирования данных
+- Read-only доступ (безопасность)
 
 ---
 
-## 🎯 Сильные стороны
-
-1. **Микросервисная архитектура** - хорошая модульность
-2. **SRT протокол** - современный, надежный для стриминга
-3. **Встроенный FFmpeg менеджер** - гибкий контроль транскодирования
-4. **JWT аутентификация** - безопасная
-5. **MinIO** - масштабируемое хранилище
-6. **React + Vite** - быстрая разработка frontend
-
-***
-
-## ⚠️ Текущие ограничения и проблемы
-
-### 1. **Критические**
-
-**A. Отсутствие Live Chat**
-- Стримы без чата кажутся "мертвыми"
-- Нет взаимодействия зрителей со стримером
-- **Impact:** Очень низкий engagement
-
-**B. Нет системы уведомлений**
-- Подписчики не знают когда начинается стрим
-- **Impact:** Низкая посещаемость стримов
-
-**C. Single quality HLS**
-- Только одно качество (HD или SD)
-- Проблемы для пользователей с медленным интернетом
-- **Impact:** Плохой UX для части аудитории
-
-**D. Нет Production deployment**
-- Только HTTP (нет HTTPS)
-- Hardcoded secrets в .env
-- Нет backup стратегии
-- **Impact:** Невозможно запустить в production
-
-### 2. **Важные**
-
-**E. Нет CDN**
-- HLS файлы раздаются напрямую с одного Nginx
-- Проблемы с масштабированием
-- **Impact:** Лимит на количество одновременных зрителей
-
-**F. Отсутствие мониторинга**
-- Нет метрик (Prometheus/Grafana)
-- Нет логирования (ELK/Loki)
-- **Impact:** Сложно диагностировать проблемы
-
-**G. Нет Follow/Subscribe системы**
-- Пользователи не могут подписываться на стримеров
-- **Impact:** Плохая retention
-
-**H. Нет Analytics**
-- Стримеры не видят статистику
-- Нет графиков viewers, watch time, и т.д.
-- **Impact:** Стримеры не знают эффективность контента
-
-### 3. **Желательные**
-
-**I. Нет модерации контента**
-- Невозможно модерировать чат (которого пока нет)
-- Нет DMCA takedown процесса
-- **Impact:** Юридические риски
-
-**J. Нет монетизации**
-- Нет subscriptions, donations
-- **Impact:** Нет revenue model
-
-***
-
-## 🚀 РЕКОМЕНДАЦИИ ПО РАЗВИТИЮ
-
-### 📅 Roadmap (приоритизированный)
-
-***
-
-### **Phase 1: Critical Features (2-3 недели)**
-
-#### 1.1 Live Chat (WebSocket) ⭐⭐⭐⭐⭐
-**Приоритет:** КРИТИЧЕСКИЙ
-
-**Что нужно:**
-- WebSocket сервер (отдельный микросервис)
-- Chat database (messages таблица)
-- Chat UI компонент в React
-- Emotes (базовые)
-
-**Технологии:**
-- Go + Gorilla WebSocket / Gin WebSocket
-- PostgreSQL для истории сообщений
-- React Context для chat state
-
-**Estimate:** 5-7 дней
-
-**Endpoints:**
-```
-WS /api/chat/stream/:streamId  - WebSocket connection
-POST /api/chat/messages         - Send message
-GET /api/chat/messages/:streamId - Get history
-DELETE /api/chat/messages/:id   - Delete message (mod)
-POST /api/chat/ban              - Ban user (mod)
-```
-
-**DB Schema:**
-```sql
-CREATE TABLE chat_messages (
-    id UUID PRIMARY KEY,
-    stream_id UUID NOT NULL,
-    user_id UUID NOT NULL,
-    username VARCHAR(50),
-    message TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE chat_bans (
-    id UUID PRIMARY KEY,
-    stream_id UUID NOT NULL,
-    user_id UUID NOT NULL,
-    banned_by UUID NOT NULL,
-    reason TEXT,
-    expires_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-***
-
-#### 1.2 Follow/Subscribe System ⭐⭐⭐⭐⭐
-**Приоритет:** КРИТИЧЕСКИЙ
-
-**Что нужно:**
-- Followers таблица
-- Follow/Unfollow endpoints
-- UI для списка подписок
-- Notification integration (для Phase 2)
-
-**Estimate:** 3-4 дня
-
-**Endpoints:**
-```
-POST /api/users/:id/follow    - Follow user
-DELETE /api/users/:id/follow  - Unfollow
-GET /api/users/:id/followers  - Get followers
-GET /api/users/:id/following  - Get following
-```
-
-**DB Schema:**
-```sql
-CREATE TABLE followers (
-    id UUID PRIMARY KEY,
-    follower_id UUID NOT NULL,    -- who follows
-    following_id UUID NOT NULL,    -- who is followed
-    created_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(follower_id, following_id)
-);
-```
-
-***
-
-#### 1.3 Push Notifications ⭐⭐⭐⭐
-**Приоритет:** ВЫСОКИЙ
-
-**Что нужно:**
-- Notification service
-- Email notifications (когда стрим начинается)
-- In-app notifications (опционально)
-
-**Технологии:**
-- Go + SMTP (SendGrid/Mailgun)
-- Background job queue (можно Redis)
-
-**Estimate:** 3-4 дня
-
-**Endpoints:**
-```
-GET /api/notifications         - Get user notifications
-PUT /api/notifications/:id/read - Mark as read
-POST /api/notifications/settings - Notification preferences
-```
-
-***
-
-#### 1.4 HTTPS + Basic Production Setup ⭐⭐⭐⭐
-**Приоритет:** ВЫСОКИЙ
-
-**Что нужно:**
-- Let's Encrypt SSL certificates
-- Traefik или Caddy (auto SSL)
-- Environment secrets management
-- Docker production compose file
-
-**Estimate:** 2-3 дня
-
-**Changes:**
-```yaml
-# docker-compose.prod.yml
-services:
-  traefik:
-    image: traefik:v2.10
-    command:
-      - "--providers.docker=true"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--certificatesresolvers.letsencrypt.acme.email=admin@yourdomain.com"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - letsencrypt:/letsencrypt
-```
-
-***
-
-### **Phase 2: Quality Improvements (3-4 недели)**
-
-#### 2.1 Adaptive Bitrate Streaming (ABR) ⭐⭐⭐⭐
-**Приоритет:** ВЫСОКИЙ
-
-**Что нужно:**
-- FFmpeg транскодирование в несколько качеств (360p, 720p, 1080p)
-- Master playlist (m3u8)
-- Video.js adaptive quality selector
-
-**FFmpeg command (example):**
-```bash
-ffmpeg -i srt://... \
-  -map 0:v -map 0:a -map 0:v -map 0:a -map 0:v -map 0:a \
-  -c:v:0 libx264 -s:v:0 1920x1080 -b:v:0 5000k \
-  -c:v:1 libx264 -s:v:1 1280x720 -b:v:1 2500k \
-  -c:v:2 libx264 -s:v:2 854x480 -b:v:2 1000k \
-  -c:a copy \
-  -var_stream_map "v:0,a:0 v:1,a:1 v:2,a:2" \
-  -master_pl_name master.m3u8 \
-  -f hls -hls_time 2 \
-  ...
-```
-
-**Estimate:** 5-7 дней
-
-***
-
-#### 2.2 Analytics Dashboard ⭐⭐⭐⭐
-**Приоритет:** ВЫСОКИЙ
-
-**Что нужно:**
-- Analytics service
-- Viewer tracking (real-time + historical)
-- Watch time calculation
-- Charts (React-chartjs-2 or Recharts)
-
-**Metrics:**
-- Peak viewers
-- Average viewers
-- Watch time
-- Chat activity
-- Geographic distribution
-
-**DB Schema:**
-```sql
-CREATE TABLE stream_analytics (
-    id UUID PRIMARY KEY,
-    stream_id UUID NOT NULL,
-    timestamp TIMESTAMP NOT NULL,
-    viewer_count INTEGER,
-    chat_message_count INTEGER,
-    created_at TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE view_sessions (
-    id UUID PRIMARY KEY,
-    stream_id UUID NOT NULL,
-    user_id UUID,
-    started_at TIMESTAMP,
-    ended_at TIMESTAMP,
-    watch_duration INTEGER  -- seconds
-);
-```
-
-**Estimate:** 5-7 дней
-
-***
-
-#### 2.3 Monitoring & Logging ⭐⭐⭐
-**Приоритет:** СРЕДНИЙ
-
-**Что нужно:**
-- Prometheus для метрик
-- Grafana для визуализации
-- Loki для логов
-
-**Metrics to track:**
-- API request rate
-- Response time
-- FFmpeg process count
-- Active streams
-- Database connections
-- Memory/CPU usage
-
-**Estimate:** 3-4 дня
+## 🚀 Deployment Stack
 
 ```yaml
-# docker-compose.monitoring.yml
-services:
-  prometheus:
-    image: prom/prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-  
-  grafana:
-    image: grafana/grafana
-    ports:
-      - "3000:3000"
+Services (Docker Compose):
+  - nginx (reverse proxy)
+  - api-gateway
+  - auth-service
+  - stream-service
+  - recording-service
+  - vod-service
+  - transcoder
+  - minio
+  - postgres
+  - frontend (Vite dev server / production nginx)
 ```
+
+**Environment:**
+- ✅ All services в Docker
+- ✅ Isolated networks
+- ✅ Shared MinIO buckets
+- ✅ Centralized NGINX routing
 
 ***
 
-#### 2.4 CDN Integration ⭐⭐⭐
-**Приоритет:** СРЕДНИЙ (для масштабирования)
+## 🎯 Архитектурные принципы
 
-**Опции:**
-1. Cloudflare R2 + Stream
-2. AWS CloudFront + S3
-3. Bunny CDN
-
-**Estimate:** 4-5 дней
-
----
-
-### **Phase 3: Advanced Features (4-6 недель)**
-
-#### 3.1 Content Moderation Tools
-- Report system
-- Moderator roles
-- DMCA takedown workflow
-
-#### 3.2 Monetization
-- Subscriptions (Stripe)
-- Donations/Tips
-- Ad integration (Google AdSense)
-
-#### 3.3 Advanced Features
-- Clips creation
-- VOD chapters/timestamps
-- Playlists
-- Subtitles support
-
-#### 3.4 Mobile Apps
-- React Native or Flutter
-- iOS + Android
+1. **Microservices:** Каждый сервис - отдельная ответственность
+2. **Event-driven:** Recording service → VOD import (асинхронно)
+3. **Scalable:** Можно масштабировать transcoder horizontally
+4. **Secure:** Multi-layer auth (JWT + Internal keys + FDW)
+5. **Real-time:** Live HLS streaming с низкой задержкой
+6. **RESTful:** Чистые REST API endpoints
 
 ***
 
-## 🏆 IMMEDIATE NEXT STEPS (First Sprint)
+## 🔜 Возможные улучшения (future)
 
-### Week 1: Live Chat
-1. Создать chat-service (WebSocket)
-2. Database schema
-3. React Chat UI component
-4. Integration tests
-
-### Week 2: Follow System + Notifications
-1. Followers database
-2. Follow/Unfollow API
-3. Email notifications
-4. UI updates
-
-### Week 3: HTTPS + Production
-1. Traefik setup
-2. Let's Encrypt integration
-3. Production docker-compose
-4. Environment secrets
+- WebSocket для real-time updates (viewer count, chat)
+- Redis для caching и session storage
+- Webhook-based stream monitoring (вместо polling)
+- CDN integration для глобального стриминга
+- AI-powered thumbnail selection
+- Stream analytics dashboard
+- Mobile apps (React Native)
 
 ***
 
-## 📋 Technical Debt & Refactoring
+**Статус:** ✅ **Fully Operational MVP**
 
-### Рекомендую исправить:
-
-1. **Унифицировать error handling** - сейчас разные стили в разных сервисах
-2. **Добавить API versioning** - `/api/v1/...`
-3. **Database migrations** - использовать migrate tool
-4. **Unit tests** - сейчас нет тестов
-5. **API documentation** - Swagger/OpenAPI
-6. **Graceful shutdown** - для FFmpeg процессов
-7. **Connection pooling** - оптимизация PostgreSQL
-
-***
-
-## 💡 Архитектурные решения
-
-### Рекомендации:
-
-1. **Chat Service** - отдельный микросервис (Go + WebSocket)
-2. **Notification Service** - отдельный микросервис с job queue
-3. **Analytics Service** - может быть интегрирован в Stream Service
-4. **Redis** - добавить для:
-   - Rate limiting
-   - Session management
-   - Real-time viewer count
-   - Job queue
-
-***
-
-## 🎯 Conclusion
-
-**Минимально жизнеспособный продукт (MVP) требует:**
-1. ✅ Live Chat (КРИТИЧНО)
-2. ✅ Follow System (КРИТИЧНО)
-3. ✅ HTTPS (КРИТИЧНО)
-4. ✅ Notifications (ВЫСОКИЙ)
-5. ✅ Adaptive Bitrate (ВЫСОКИЙ)
-
-**Estimate для MVP:** 6-8 недель (1 разработчик full-time)
-
-После реализации этих фич платформа будет готова для beta-запуска!
-
-
-
-# 📊 Текущее состояние системы Streaming Platform
-
-## ✅ Что работает (реализовано)
-
-### Backend
-1. **API Gateway** - централизованная точка входа
-   - CORS middleware
-   - JWT authentication
-   - Rate limiting
-   - Routing для всех сервисов
-
-2. **Auth Service** - авторизация и аутентификация
-   - Регистрация/логин
-   - JWT токены
-   - Управление профилем
-   - Смена пароля
-
-3. **Stream Service** - live streaming
-   - **ABR (Adaptive Bitrate)** - 4 качества (360p-1080p)
-   - RTMP ingestion через Nginx
-   - HLS transcoding через FFmpeg
-   - Stream management (CRUD)
-   - Webhook callbacks
-   - Thumbnail generation
-
-4. **Recording Service** - запись стримов
-   - Автоматическая запись при окончании стрима
-   - FFmpeg recording
-   - Storage в MinIO
-   - Webhook integration
-
-5. **Infrastructure**
-   - PostgreSQL (3 БД: auth, streams, recordings)
-   - MinIO (S3-compatible storage)
-   - Nginx-RTMP (streaming server)
-   - Redis (опционально)
-
-### Frontend
-1. **Страницы**
-   - ✅ HomePage - главная
-   - ✅ LoginPage/RegisterPage - авторизация
-   - ✅ DashboardPage - личный кабинет
-   - ✅ LiveStreamsPage - список live стримов
-   - ✅ WatchStreamPage - просмотр live с ABR
-   - ✅ VideosPage - список записей (в процессе отладки)
-   - ✅ SettingsPage - настройки профиля
-
-2. **Компоненты**
-   - VideoJS Player с HLS.js
-   - QualitySelector - переключение качества ABR
-   - LiveStreamCard - карточка стрима
-   - SearchBar, Toast, Modal
-
-3. **API интеграция**
-   - Axios client с JWT interceptors
-   - Auth API
-   - Streams API  
-   - Videos/Recordings API (частично)
-
-## ⚠️ Текущие проблемы
-
-1. **VideosPage** - ошибка с recordings API
-   - Response.data не является массивом
-   - Нужна отладка формата ответа от backend
-
-2. **WatchVideoPage** - не создана
-   - Нужен плеер для VOD
-   - Интеграция с recordings API
-
-3. **CORS issues** - периодически
-   - Запросы без `/api` префикса
-
-## 🎯 Дальнейшие шаги
-
-### Приоритет 1: Доделать VOD функционал
-
-1. **Починить Recording Service API**
-   ```bash
-   # Проверить что GET /api/recordings возвращает массив
-   curl http://localhost/api/recordings
-   ```
-   - Должен возвращать `[]` или `[{...recordings}]`
-   - Если возвращает `{"recordings": [...]}` - поправить backend или frontend
-
-2. **Создать WatchVideoPage.jsx**
-   ```jsx
-   // frontend/src/pages/WatchVideoPage.jsx
-   - VideoJS player для VOD (не HLS, а MP4)
-   - Metadata (title, views, date)
-   - Like/Share функции
-   ```
-
-3. **Добавить маршруты**
-   ```jsx
-   // App.jsx
-   <Route path="/video/:id" element={<WatchVideoPage />} />
-   ```
-
-### Приоритет 2: Улучшения
-
-4. **Chat в live стримах**
-   - WebSocket integration
-   - Chat component
-   - Message persistence
-
-5. **Analytics Dashboard**
-   - Viewer statistics
-   - Stream analytics
-   - Revenue tracking (если нужно)
-
-6. **VOD Service** (отдельный сервис)
-   - Вынести из Recording Service
-   - Transcoding для VOD (разные качества)
-   - CDN integration
-
-### Приоритет 3: Production готовность
-
-7. **Security**
-   - HTTPS/SSL certificates
-   - Rate limiting tuning
-   - Input validation
-   - XSS/CSRF protection
-
-8. **DevOps**
-   - Docker Compose для всей системы
-   - CI/CD pipeline
-   - Monitoring (Prometheus/Grafana)
-   - Logging (ELK stack)
-
-9. **Testing**
-   - Unit tests (Go)
-   - Integration tests
-   - E2E tests (Playwright)
-
-## 📝 Немедленные действия (следующие 30 минут)
-
-### Шаг 1: Отладить VideosPage
-```bash
-# В браузере консоль (F12)
-# Смотрим что показывает console.log('Recordings response:', response.data)
-```
-
-### Шаг 2: Тестовый curl запрос
-```bash
-curl http://localhost/api/recordings
-```
-
-### Шаг 3: Создать WatchVideoPage
-- Скопировать структуру из WatchStreamPage
-- Убрать live-специфичные вещи
-- Добавить VOD плеер
-
-## 🏗️ Архитектура системы
-
-```
-┌─────────────┐
-│   Frontend  │ (React + Vite)
-│ Port: 3000  │
-└──────┬──────┘
-       │
-       ↓
-┌─────────────┐
-│ API Gateway │ (Go + Gin)
-│  Port: 8080 │
-└──────┬──────┘
-       │
-       ├──→ Auth Service (8081)
-       ├──→ Stream Service (8082)  
-       ├──→ Recording Service (8083)
-       └──→ (VOD Service - будущее)
-                │
-                ├──→ PostgreSQL
-                ├──→ MinIO (S3)
-                └──→ Nginx-RTMP (1935/8000)
-```
-
-## 📊 Статистика кода
-
-- **Backend Services**: 4 (auth, stream, recording, gateway)
-- **Frontend Pages**: 8 (7 работают, 1 в разработке)
-- **Database Tables**: ~12
-- **API Endpoints**: ~30+
-- **Компоненты React**: ~15
-
-Система **почти готова** для базового использования! Осталось доделать VOD playback и отладить несколько багов. 🚀
+Все core features работают, система готова к тестированию и демонстрации! 🎉
