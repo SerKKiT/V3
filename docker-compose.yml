@@ -298,6 +298,31 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ✅ НОВЫЙ СЕРВИС: Cache Refresher
+  cache-refresher:
+    build: ./services/cache-refresher
+    container_name: streaming-cache-refresher
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: streaming_user
+      POSTGRES_PASSWORD: streaming_pass
+      STREAMS_DB_NAME: streams_db
+      VOD_DB_NAME: vod_db
+      STREAMS_REFRESH_INTERVAL: ${STREAMS_REFRESH_INTERVAL:-5m}
+      VIDEOS_REFRESH_INTERVAL: ${VIDEOS_REFRESH_INTERVAL:-10m}
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - streaming-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   streaming-network:
     driver: bridge
