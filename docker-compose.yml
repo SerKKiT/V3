@@ -1,0 +1,308 @@
+version: '3.8'
+
+services:
+  # =================================================================
+  # DATABASE
+  # =================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: streaming-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - streaming-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # =================================================================
+  # DATABASE MIGRATIONS - ⭐ NEW SERVICE
+  # =================================================================
+    # =================================================================
+  # DATABASE MIGRATIONS - ⭐ FIXED
+  # =================================================================
+  migrations:
+    image: migrate/migrate:v4.17.0
+    container_name: streaming-migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./infrastructure/postgres/migrations:/migrations:ro
+    environment:
+      AUTH_DB_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${AUTH_DB_NAME}?sslmode=disable
+      STREAMS_DB_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${STREAMS_DB_NAME}?sslmode=disable
+      VOD_DB_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${VOD_DB_NAME}?sslmode=disable
+    networks:
+      - streaming-network
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "🚀 Starting database migrations..."
+        echo ""
+        
+        echo "📦 Migrating auth_db..."
+        migrate -path /migrations/auth_db -database "$${AUTH_DB_URL}" up
+        if [ $$? -eq 0 ]; then
+          echo "✅ auth_db migrated successfully"
+        else
+          echo "❌ auth_db migration failed"
+          exit 1
+        fi
+        echo ""
+        
+        echo "📦 Migrating streams_db..."
+        migrate -path /migrations/streams_db -database "$${STREAMS_DB_URL}" up
+        if [ $$? -eq 0 ]; then
+          echo "✅ streams_db migrated successfully"
+        else
+          echo "❌ streams_db migration failed"
+          exit 1
+        fi
+        echo ""
+        
+        echo "📦 Migrating vod_db..."
+        migrate -path /migrations/vod_db -database "$${VOD_DB_URL}" up
+        if [ $$? -eq 0 ]; then
+          echo "✅ vod_db migrated successfully"
+        else
+          echo "❌ vod_db migration failed"
+          exit 1
+        fi
+        echo ""
+        
+        echo "🎉 All migrations completed successfully!"
+    restart: on-failure:3
+
+
+  # =================================================================
+  # STORAGE
+  # =================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: streaming-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - streaming-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # =================================================================
+  # REVERSE PROXY
+  # =================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: streaming-nginx
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - hls_data:/var/www/hls
+    ports:
+      - "${NGINX_HTTP_PORT}:80"
+      - "${NGINX_HTTPS_PORT}:443"
+    networks:
+      - streaming-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # =================================================================
+  # MICROSERVICES
+  # =================================================================
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: streaming-auth
+    environment:
+      DATABASE_URL: ${AUTH_DB_URL}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${AUTH_DB_NAME}
+      JWT_SECRET: ${JWT_SECRET}
+      PORT: ${AUTH_SERVICE_PORT}
+    ports:
+      - "${AUTH_SERVICE_PORT}:${AUTH_SERVICE_PORT}"
+    networks:
+      - streaming-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  stream-service:
+    build:
+      context: ./services/stream-service
+      dockerfile: Dockerfile
+    container_name: streaming-stream
+    environment:
+      DATABASE_URL: ${STREAMS_DB_URL}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${STREAMS_DB_NAME}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_USE_SSL: ${MINIO_USE_SSL}
+      MINIO_BUCKET: ${MINIO_BUCKET_LIVE_SEGMENTS}
+      SRT_PORT: ${SRT_PORT}
+      SRT_LATENCY: ${SRT_LATENCY}
+      PORT: ${STREAM_SERVICE_PORT}
+      JWT_SECRET: ${JWT_SECRET}
+      RECORDING_SERVICE_URL: ${RECORDING_SERVICE_URL}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+    ports:
+      - "${STREAM_SERVICE_PORT}:${STREAM_SERVICE_PORT}"
+      - "${SRT_PORT}:${SRT_PORT}/udp"
+    networks:
+      - streaming-network
+    volumes:
+      - hls_data:/var/www/hls
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  recording-service:
+    build:
+      context: ./services/recording-service
+      dockerfile: Dockerfile
+    container_name: streaming-recording
+    environment:
+      DATABASE_URL: ${VOD_DB_URL}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${VOD_DB_NAME}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_USE_SSL: ${MINIO_USE_SSL}
+      MINIO_BUCKET: ${MINIO_BUCKET_RECORDINGS}
+      PORT: ${RECORDING_SERVICE_PORT}
+      STREAM_SERVICE_URL: ${STREAM_SERVICE_URL}
+      VOD_SERVICE_URL: ${VOD_SERVICE_URL}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+    ports:
+      - "${RECORDING_SERVICE_PORT}:${RECORDING_SERVICE_PORT}"
+    networks:
+      - streaming-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+      stream-service:
+        condition: service_started
+    restart: unless-stopped
+
+  vod-service:
+    build:
+      context: ./services/vod-service
+      dockerfile: Dockerfile
+    container_name: streaming-vod
+    environment:
+      PORT: ${VOD_SERVICE_PORT}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${VOD_DB_NAME}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_USE_SSL: ${MINIO_USE_SSL}
+      MINIO_BUCKET: ${MINIO_BUCKET_VOD}
+      RECORDING_SERVICE_URL: ${RECORDING_SERVICE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+    ports:
+      - "${VOD_SERVICE_PORT}:${VOD_SERVICE_PORT}"
+    networks:
+      - streaming-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: streaming-gateway
+    environment:
+      PORT: ${API_GATEWAY_PORT}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL}
+      STREAM_SERVICE_URL: ${STREAM_SERVICE_URL}
+      RECORDING_SERVICE_URL: ${RECORDING_SERVICE_URL}
+      VOD_SERVICE_URL: ${VOD_SERVICE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "${API_GATEWAY_PORT}:${API_GATEWAY_PORT}"
+    networks:
+      - streaming-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+      auth-service:
+        condition: service_started
+      stream-service:
+        condition: service_started
+      recording-service:
+        condition: service_started
+      vod-service:
+        condition: service_started
+    restart: unless-stopped
+
+networks:
+  streaming-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+  hls_data:

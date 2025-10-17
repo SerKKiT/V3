@@ -1,0 +1,273 @@
+/* ============================================
+   🎬 Custom Video.js Dark Theme
+   ============================================ */
+
+/* Основной контейнер плеера */
+.video-js {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background-color: #000;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+/* Убираем стандартные градиенты */
+.video-js .vjs-control-bar {
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.9), rgba(0, 0, 0, 0)) !important;
+  backdrop-filter: blur(8px);
+  height: 3.5rem;
+  padding: 0 1rem;
+}
+
+/* ============================================
+   🔘 Кнопки управления
+   ============================================ */
+
+.video-js .vjs-control {
+  width: 2.5rem;
+  height: 2.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 0.25rem;
+  border-radius: 0.5rem;
+  transition: all 0.2s ease;
+}
+
+.video-js .vjs-control:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.video-js .vjs-control:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+/* Play/Pause */
+.video-js .vjs-play-control {
+  order: 1;
+}
+
+.video-js .vjs-play-control .vjs-icon-placeholder:before {
+  font-size: 1.5rem;
+  line-height: 2.5rem;
+  color: #fff;
+}
+
+/* Volume */
+.video-js .vjs-volume-panel {
+  order: 2;
+  display: flex !important;
+  align-items: center;
+  width: auto;
+  transition: width 0.3s ease;
+}
+
+.video-js .vjs-volume-panel:hover {
+  width: 8rem;
+}
+
+.video-js .vjs-mute-control {
+  width: 2.5rem;
+}
+
+.video-js .vjs-volume-bar {
+  margin: 0 0.5rem;
+  height: 0.25rem;
+  border-radius: 1rem;
+}
+
+.video-js .vjs-volume-level {
+  background-color: #3b82f6;
+  border-radius: 1rem;
+}
+
+.video-js .vjs-volume-level:before {
+  display: none;
+}
+
+/* Time Display */
+.video-js .vjs-current-time,
+.video-js .vjs-time-divider,
+.video-js .vjs-duration {
+  order: 3;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #e5e7eb;
+  padding: 0 0.5rem;
+  display: flex;
+  align-items: center;
+}
+
+/* Progress Bar */
+.video-js .vjs-progress-control {
+  position: absolute;
+  top: -0.5rem;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 0.5rem;
+  order: 0;
+}
+
+.video-js .vjs-progress-holder {
+  height: 0.25rem;
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 1rem;
+  transition: height 0.2s ease;
+}
+
+.video-js .vjs-progress-control:hover .vjs-progress-holder {
+  height: 0.5rem;
+}
+
+.video-js .vjs-load-progress {
+  background-color: rgba(255, 255, 255, 0.3);
+  border-radius: 1rem;
+}
+
+.video-js .vjs-play-progress {
+  background-color: #3b82f6;
+  border-radius: 1rem;
+}
+
+.video-js .vjs-play-progress:before {
+  content: '';
+  position: absolute;
+  right: -0.375rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0.75rem;
+  height: 0.75rem;
+  background-color: #fff;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.video-js .vjs-progress-control:hover .vjs-play-progress:before {
+  opacity: 1;
+}
+
+/* ============================================
+   📺 Fullscreen Button
+   ============================================ */
+
+.video-js .vjs-fullscreen-control {
+  order: 6;
+}
+
+.video-js .vjs-fullscreen-control .vjs-icon-placeholder:before {
+  font-size: 1.25rem;
+}
+
+/* ============================================
+   ▶️ Big Play Button
+   ============================================ */
+
+.video-js .vjs-big-play-button {
+  width: 5rem;
+  height: 5rem;
+  border-radius: 50%;
+  border: none;
+  background-color: rgba(59, 130, 246, 0.9);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(59, 130, 246, 0.4);
+  transition: all 0.3s ease;
+}
+
+.video-js .vjs-big-play-button:hover {
+  background-color: rgba(59, 130, 246, 1);
+  transform: scale(1.1);
+}
+
+.video-js .vjs-big-play-button .vjs-icon-placeholder:before {
+  font-size: 2rem;
+  line-height: 5rem;
+}
+
+.video-js.vjs-playing .vjs-big-play-button {
+  display: none;
+}
+
+/* ============================================
+   🎭 Loading Spinner
+   ============================================ */
+
+.video-js .vjs-loading-spinner {
+  border-color: rgba(59, 130, 246, 0.3);
+  border-top-color: #3b82f6;
+  width: 4rem;
+  height: 4rem;
+  margin: -2rem 0 0 -2rem;
+}
+
+/* ============================================
+   ✨ Animations
+   ============================================ */
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.2s ease-out;
+}
+
+/* ============================================
+   📱 Responsive
+   ============================================ */
+
+@media (max-width: 768px) {
+  .video-js .vjs-control-bar {
+    height: 3rem;
+  }
+
+  .video-js .vjs-control {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .video-js .vjs-big-play-button {
+    width: 4rem;
+    height: 4rem;
+  }
+
+  .video-js .vjs-big-play-button .vjs-icon-placeholder:before {
+    font-size: 1.5rem;
+    line-height: 4rem;
+  }
+
+  .quality-selector-wrapper {
+    bottom: 3.5rem;
+    right: 0.75rem;
+  }
+}
+
+/* ============================================
+   🌙 Dark Mode
+   ============================================ */
+
+.video-js .vjs-control-bar {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* ============================================
+   ♿ Accessibility
+   ============================================ */
+
+.video-js .vjs-control:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
+
+.video-js button:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}
