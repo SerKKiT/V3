@@ -21,6 +21,8 @@ func main() {
 	// Initialize middleware
 	authMiddleware := middleware.NewAuthMiddleware(cfg.JWTSecret)
 	rateLimiter := middleware.NewRateLimiter(cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.Burst)
+	authRateLimiter := middleware.NewAuthRateLimiter() // ✅ НОВЫЙ
+	validator := middleware.NewValidator()             // ✅ НОВЫЙ
 
 	// Initialize proxies
 	authProxy := proxy.NewServiceProxy(cfg.Services.AuthURL)
@@ -28,12 +30,9 @@ func main() {
 	recordingProxy := proxy.NewServiceProxy(cfg.Services.RecordingURL)
 	vodProxy := proxy.NewServiceProxy(cfg.Services.VODURL)
 
-	// Setup router
 	router := gin.Default()
 
-	// ============================================================
-	// CORS Configuration (UPDATED)
-	// ============================================================
+	// CORS Configuration
 	corsConfig := middleware.CORSConfig{
 		AllowedOrigins: cfg.CORS.AllowedOrigins,
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
@@ -44,33 +43,40 @@ func main() {
 			"X-Internal-API-Key",
 		},
 		AllowCredentials: cfg.CORS.AllowCredentials,
-		MaxAge:           3600, // 1 час кэширования preflight
+		MaxAge:           3600,
 	}
 
-	// Apply middleware globally
-	router.Use(middleware.CORSMiddlewareWithConfig(corsConfig)) // ✅ НОВЫЙ CORS
+	// Global middleware
+	router.Use(middleware.CORSMiddlewareWithConfig(corsConfig))
 	router.Use(middleware.RequestLogger())
 	router.Use(rateLimiter.Limit())
 
-	// Gateway health
+	// Health check
 	router.GET("/health", handlers.HealthCheck)
 
 	// ============================================================
-	// Auth Service (PUBLIC)
+	// Auth Service (PUBLIC) - WITH STRICT RATE LIMITING
 	// ============================================================
 	authPublic := router.Group("/api/auth")
+	authPublic.Use(authRateLimiter.Limit()) // ✅ Строгий rate limit
 	{
-		authPublic.POST("/register", func(c *gin.Context) {
-			authProxy.ProxyRequest(c, "/api")
-		})
+		authPublic.POST("/register",
+			validator.ValidateAuthInput(), // ✅ Validation
+			func(c *gin.Context) {
+				authProxy.ProxyRequest(c, "/api")
+			},
+		)
 
-		authPublic.POST("/login", func(c *gin.Context) {
-			authProxy.ProxyRequest(c, "/api")
-		})
+		authPublic.POST("/login",
+			validator.ValidateAuthInput(), // ✅ Validation
+			func(c *gin.Context) {
+				authProxy.ProxyRequest(c, "/api")
+			},
+		)
 	}
 
 	// ============================================================
-	// Auth Service (PROTECTED) - User Profile Management
+	// Auth Service (PROTECTED)
 	// ============================================================
 	authProtected := router.Group("/api/auth")
 	authProtected.Use(authMiddleware.ValidateJWT())
@@ -84,10 +90,13 @@ func main() {
 			authProxy.ProxyRequest(c, "/api")
 		})
 
-		authProtected.PUT("/profile", func(c *gin.Context) {
-			log.Printf("🔄 Proxying PUT /profile to auth-service")
-			authProxy.ProxyRequest(c, "/api")
-		})
+		authProtected.PUT("/profile",
+			validator.ValidateAuthInput(), // ✅ Validation
+			func(c *gin.Context) {
+				log.Printf("🔄 Proxying PUT /profile to auth-service")
+				authProxy.ProxyRequest(c, "/api")
+			},
+		)
 
 		authProtected.POST("/change-password", func(c *gin.Context) {
 			log.Printf("🔄 Proxying POST /change-password to auth-service")
@@ -96,7 +105,7 @@ func main() {
 	}
 
 	// ============================================================
-	// Stream Service (ABR Support)
+	// Stream Service
 	// ============================================================
 	streamPublic := router.Group("/api/streams")
 	{
@@ -131,10 +140,13 @@ func main() {
 	streamProtected := router.Group("/api/streams")
 	streamProtected.Use(authMiddleware.ValidateJWT())
 	{
-		streamProtected.POST("", func(c *gin.Context) {
-			log.Printf("🔄 Creating stream with ABR support")
-			streamProxy.ProxyRequest(c, "/api")
-		})
+		streamProtected.POST("",
+			validator.ValidateStreamInput(), // ✅ Validation
+			func(c *gin.Context) {
+				log.Printf("🔄 Creating stream with ABR support")
+				streamProxy.ProxyRequest(c, "/api")
+			},
+		)
 
 		streamProtected.GET("/user", func(c *gin.Context) {
 			streamProxy.ProxyRequest(c, "/api")
@@ -145,9 +157,12 @@ func main() {
 			streamProxy.ProxyRequest(c, "/api")
 		})
 
-		streamProtected.PUT("/:id", func(c *gin.Context) {
-			streamProxy.ProxyRequest(c, "/api")
-		})
+		streamProtected.PUT("/:id",
+			validator.ValidateStreamInput(), // ✅ Validation
+			func(c *gin.Context) {
+				streamProxy.ProxyRequest(c, "/api")
+			},
+		)
 
 		streamProtected.DELETE("/:id", func(c *gin.Context) {
 			streamProxy.ProxyRequest(c, "/api")
@@ -216,9 +231,12 @@ func main() {
 			vodProxy.ProxyRequest(c, "/api")
 		})
 
-		vodProtected.PUT("/:id", func(c *gin.Context) {
-			vodProxy.ProxyRequest(c, "/api")
-		})
+		vodProtected.PUT("/:id",
+			validator.ValidateStreamInput(), // ✅ Validation
+			func(c *gin.Context) {
+				vodProxy.ProxyRequest(c, "/api")
+			},
+		)
 
 		vodProtected.DELETE("/:id", func(c *gin.Context) {
 			vodProxy.ProxyRequest(c, "/api")
@@ -230,13 +248,9 @@ func main() {
 	}
 
 	log.Printf("✅ API Gateway running on port %s", cfg.Port)
-	log.Printf("🛡️ CORS Protection: Enabled")
-	log.Printf("📋 Allowed Origins: %v", cfg.CORS.AllowedOrigins)
+	log.Printf("🛡️ Auth Rate Limiting: 5 attempts/minute, 15min ban after exceed")
+	log.Printf("✅ Input Validation: Enabled (XSS protection, length limits)")
 	log.Printf("🎬 ABR Support: Enabled (4 qualities: 360p-1080p)")
-	log.Println("📋 Registered Routes:")
-	for _, route := range router.Routes() {
-		log.Printf("  %s %s", route.Method, route.Path)
-	}
 
 	if err := router.Run(":" + cfg.Port); err != nil {
 		log.Fatal("❌ Failed to start server:", err)

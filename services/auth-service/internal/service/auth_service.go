@@ -1,12 +1,16 @@
 package service
 
 import (
-	"fmt"
+	"errors"
+	"log"
+	"strings"
+	"time"
 
 	"github.com/SerKKiT/streaming-platform/auth-service/internal/models"
 	"github.com/SerKKiT/streaming-platform/auth-service/internal/repository"
-	"github.com/SerKKiT/streaming-platform/auth-service/pkg/utils"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthService struct {
@@ -21,144 +25,170 @@ func NewAuthService(userRepo *repository.UserRepository, jwtSecret string) *Auth
 	}
 }
 
-// Register creates a new user account
+// Register creates a new user
 func (s *AuthService) Register(req *models.RegisterRequest) (*models.AuthResponse, error) {
-	// Check if username already exists
-	existingUser, _ := s.userRepo.GetUserByUsername(req.Username)
+	// Check if user already exists
+	existingUser, _ := s.userRepo.GetUserByEmail(req.Email)
 	if existingUser != nil {
-		return nil, fmt.Errorf("username already exists")
+		return nil, errors.New("email already registered")
 	}
 
-	// Check if email already exists
-	existingEmail, _ := s.userRepo.GetUserByEmail(req.Email)
-	if existingEmail != nil {
-		return nil, fmt.Errorf("email already exists")
+	existingUser, _ = s.userRepo.GetUserByUsername(req.Username)
+	if existingUser != nil {
+		return nil, errors.New("username already taken")
 	}
 
 	// Hash password
-	passwordHash, err := utils.HashPassword(req.Password)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, fmt.Errorf("failed to hash password: %w", err)
+		return nil, errors.New("failed to hash password")
 	}
 
-	// Create user
-	user, err := s.userRepo.CreateUser(req.Username, req.Email, passwordHash)
+	// Create user using repository method
+	user, err := s.userRepo.CreateUser(req.Username, req.Email, string(hashedPassword))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("failed to create user")
 	}
 
-	// Generate JWT token (без duration параметра)
-	token, expiresAt, err := utils.GenerateToken(user.ID, user.Username, s.jwtSecret)
+	// Generate token
+	token, err := s.generateToken(user)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate token: %w", err)
+		return nil, errors.New("failed to generate token")
 	}
 
 	return &models.AuthResponse{
-		Token:     token,
-		ExpiresAt: expiresAt,
-		User:      user,
+		Token: token,
+		User:  user,
 	}, nil
 }
 
-// Login authenticates a user and returns a JWT token
+// Login authenticates a user (email OR username)
 func (s *AuthService) Login(req *models.LoginRequest) (*models.AuthResponse, error) {
-	// Get user by username
-	user, err := s.userRepo.GetUserByUsername(req.Username)
-	if err != nil {
-		return nil, fmt.Errorf("invalid credentials")
+	// Determine identifier (email or username)
+	identifier := ""
+	isEmail := false
+
+	if req.Email != "" {
+		identifier = req.Email
+		isEmail = true
+	} else if req.Username != "" {
+		identifier = req.Username
+		// Check if username is actually an email
+		isEmail = strings.Contains(identifier, "@")
 	}
 
-	// Check password
-	if !utils.CheckPasswordHash(req.Password, user.PasswordHash) {
-		return nil, fmt.Errorf("invalid credentials")
+	if identifier == "" {
+		return nil, errors.New("email or username is required")
 	}
 
-	// Generate JWT token (без duration параметра)
-	token, expiresAt, err := utils.GenerateToken(user.ID, user.Username, s.jwtSecret)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate token: %w", err)
+	// Get user from database
+	var user *models.User
+	var err error
+
+	if isEmail {
+		user, err = s.userRepo.GetUserByEmail(identifier)
+	} else {
+		user, err = s.userRepo.GetUserByUsername(identifier)
 	}
+
+	if err != nil || user == nil {
+		log.Printf("❌ Login failed: user not found (identifier: %s)", identifier)
+		return nil, errors.New("invalid credentials")
+	}
+
+	// Compare password
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		log.Printf("❌ Login failed: invalid password (user_id: %s)", user.ID)
+		return nil, errors.New("invalid credentials")
+	}
+
+	// Generate token
+	token, err := s.generateToken(user)
+	if err != nil {
+		return nil, errors.New("failed to generate token")
+	}
+
+	log.Printf("✅ Login successful: user_id=%s, username=%s", user.ID, user.Username)
 
 	return &models.AuthResponse{
-		Token:     token,
-		ExpiresAt: expiresAt,
-		User:      user,
+		Token: token,
+		User:  user,
 	}, nil
 }
 
-// GetProfile returns user profile information
+// GetProfile retrieves user profile
 func (s *AuthService) GetProfile(userID uuid.UUID) (*models.User, error) {
-	user, err := s.userRepo.GetUserByID(userID)
-	if err != nil {
-		return nil, fmt.Errorf("user not found")
-	}
-
-	// Don't return password hash
-	user.PasswordHash = ""
-
-	return user, nil
+	return s.userRepo.GetUserByID(userID)
 }
 
-// UpdateProfile updates user profile information
+// UpdateProfile updates user profile
 func (s *AuthService) UpdateProfile(userID uuid.UUID, req *models.UpdateProfileRequest) (*models.User, error) {
-	// Get current user
 	user, err := s.userRepo.GetUserByID(userID)
 	if err != nil {
-		return nil, fmt.Errorf("user not found")
+		return nil, errors.New("user not found")
 	}
 
-	// Check if new username is already taken by another user
+	// Check if new username is taken
 	if req.Username != "" && req.Username != user.Username {
 		existingUser, _ := s.userRepo.GetUserByUsername(req.Username)
-		if existingUser != nil && existingUser.ID != userID {
-			return nil, fmt.Errorf("username already taken")
+		if existingUser != nil {
+			return nil, errors.New("username already taken")
 		}
 		user.Username = req.Username
 	}
 
-	// Check if new email is already taken by another user
+	// Check if new email is taken
 	if req.Email != "" && req.Email != user.Email {
-		existingEmail, _ := s.userRepo.GetUserByEmail(req.Email)
-		if existingEmail != nil && existingEmail.ID != userID {
-			return nil, fmt.Errorf("email already taken")
+		existingUser, _ := s.userRepo.GetUserByEmail(req.Email)
+		if existingUser != nil {
+			return nil, errors.New("email already registered")
 		}
 		user.Email = req.Email
 	}
 
-	// Update user
-	if err := s.userRepo.UpdateUser(user); err != nil {
-		return nil, err
-	}
+	user.UpdatedAt = time.Now()
 
-	// Don't return password hash
-	user.PasswordHash = ""
+	if err := s.userRepo.UpdateUser(user); err != nil {
+		return nil, errors.New("failed to update profile")
+	}
 
 	return user, nil
 }
 
 // ChangePassword changes user password
 func (s *AuthService) ChangePassword(userID uuid.UUID, req *models.ChangePasswordRequest) error {
-	// Get user
 	user, err := s.userRepo.GetUserByID(userID)
 	if err != nil {
-		return fmt.Errorf("user not found")
+		return errors.New("user not found")
 	}
 
 	// Verify old password
-	if !utils.CheckPasswordHash(req.OldPassword, user.PasswordHash) {
-		return fmt.Errorf("current password is incorrect")
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.OldPassword)); err != nil {
+		return errors.New("invalid old password")
 	}
 
 	// Hash new password
-	newPasswordHash, err := utils.HashPassword(req.NewPassword)
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
-		return fmt.Errorf("failed to hash new password: %w", err)
+		return errors.New("failed to hash password")
 	}
 
-	// Update password
-	if err := s.userRepo.UpdatePassword(userID, newPasswordHash); err != nil {
-		return err
+	// Update password using repository method
+	if err := s.userRepo.UpdatePassword(userID, string(hashedPassword)); err != nil {
+		return errors.New("failed to change password")
 	}
 
 	return nil
+}
+
+// generateToken creates a JWT token
+func (s *AuthService) generateToken(user *models.User) (string, error) {
+	claims := jwt.MapClaims{
+		"user_id":  user.ID.String(),
+		"username": user.Username,
+		"exp":      time.Now().Add(24 * time.Hour).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(s.jwtSecret))
 }
